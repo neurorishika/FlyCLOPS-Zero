@@ -1,0 +1,40 @@
+# Rig Hardware Configuration
+camera:
+  index: 0
+  width: 2048
+  height: 2048
+  offset_x: 260
+  offset_y: 8
+  gain: 0.0 
+  target_fps: 100
+
+arena:
+  physical_radius: 75.0  # in mm
+
+projector:
+  width: 1280
+  height: 800
+
+backlight:
+  ir_led_ip: "192.168.0.1"
+
+calibration:
+  exposure_time: 40000  # in microseconds
+  detail: 6
+
+experiment: 
+  exposure_time: 9000  # in microseconds (overrides FPS if more than 10e6/FPS)
+
+led_panel:
+  hostname: "flyprojection-server"
+  port: 65432
+
+logging:
+  level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  file: "experiment_{timestamp}.log"  # Log file with timestamp
+
+# ZMQ Socket Addresses (using IPC for speed on a single machine)
+zmq_sockets:
+  camera_frames: "ipc:///tmp/camera_frames.sock"
+  tracking_estimates: "ipc:///tmp/tracking_estimates.sock"
+  stimulus_draw: "ipc:///tmp/stimulus_draw.sock"
