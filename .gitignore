@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+
+# Poetry
+*.lock
+
+# Conda
+.env/
+.conda/
+*.conda
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# HDF5 files
+*.h5
+*.hdf5
