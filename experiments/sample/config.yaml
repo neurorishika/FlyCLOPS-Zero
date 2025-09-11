@@ -1,0 +1,72 @@
+# Rig Hardware Configuration
+camera:
+  index: 0
+  width: 2048
+  height: 2048
+  offset_x: 260
+  offset_y: 8
+  gain: 0.0 
+  target_fps: 100
+
+arena:
+  physical_radius: 75.0  # in mm
+
+projector:
+  width: 1280
+  height: 800
+
+backlight:
+  ir_led_ip: "192.168.0.1"
+
+calibration:
+  exposure_time: 40000  # in microseconds
+  detail: 6
+
+led_panel:
+  hostname: "flyprojection-server"
+  port: 65432
+
+logging:
+  level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  file: "experiment_{timestamp}.log"  # Log file with timestamp
+  downscale_factor: 4 # Factor to downscale images for logging (1 = full size, 2 = half size, etc.)
+
+# ZMQ Socket Addresses (using IPC for speed on a single machine)
+zmq_sockets:
+  camera_frames: "ipc:///tmp/camera_frames.sock"
+  tracking_estimates: "ipc:///tmp/tracking_estimates.sock"
+  stimulus_draw: "ipc:///tmp/stimulus_draw.sock"
+  log_data: "ipc:///tmp/log_data.sock"
+  debug_tracker: "ipc:///tmp/debug_tracker.sock"
+  shutdown_signal: "ipc:///tmp/shutdown_signal.sock"
+
+tracker:
+  n_targets: 3
+  kalman_noise_covariance: 0.03
+  kalman_measurement_noise_covariance: 0.1
+  morph_kernel_size: 5
+  threshold_value: 50
+  trajectory_history_seconds: 5
+  min_contour_area: 50
+  max_contour_area: 500
+  max_distance_threshold: 25
+  min_detection_counts: 10
+  min_tracking_counts: 10
+  smoothing_alpha: 0.5
+  moving_threshold: 5
+  fallback_to_last_position: false
+  debug: true # Set to true to see OpenCV windows from the tracker process
+  debug_frame_skip: 50 # Send every Nth frame to debug viewer (reduces load)
+  debug_jpeg_quality: 75 # JPEG compression quality (0-100, lower = smaller files)
+  debug_resize_width: 512 # Resize debug images to this width for performance
+  debug_resize_height: 512 # Resize debug images to this height for performance
+
+experiment:
+  exposure_time: 9000  # in microseconds (overrides FPS if more than 10e6/FPS)
+  duration_pre: 0.1 # in minutes
+  duration_stim: 2 # in minutes
+  duration_post: 0.1 # in minutes
+  max_time_outside_intask: 10 # in seconds
+  colors:
+    background: [0, 0, 1] # Blue
+    stimulus: [1, 0, 1] # Magenta
