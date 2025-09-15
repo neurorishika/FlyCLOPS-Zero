@@ -41,7 +41,7 @@ zmq_sockets:
   shutdown_signal: "ipc:///tmp/shutdown_signal.sock"
 
 tracker:
-  n_targets: 3
+  n_targets: 4
   kalman_noise_covariance: 0.03
   kalman_measurement_noise_covariance: 0.1
   morph_kernel_size: 5

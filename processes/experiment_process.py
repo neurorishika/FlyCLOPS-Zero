@@ -148,13 +148,18 @@ def main(experiment_name: str, session_timestamp: str):
     estimate_sub.setsockopt(zmq.CONFLATE, 1)
 
     draw_pub = context.socket(zmq.PUB)
+    draw_pub.setsockopt(zmq.SNDHWM, 1)
+    draw_pub.setsockopt(zmq.LINGER, 0)
     draw_pub.bind(zmq_config["stimulus_draw"])
+    print(
+        f"Draw publisher bound to {zmq_config['stimulus_draw']} (Non-blocking, HWM=1)"
+    )
 
     log_pub = context.socket(zmq.PUB)
     log_pub.bind(zmq_config["log_data"])
 
     shutdown_pub = context.socket(zmq.PUB)
-    shutdown_pub.bind(zmq_config['shutdown_signal'])
+    shutdown_pub.bind(zmq_config["shutdown_signal"])
 
     print(f"Experiment process subscribed to {zmq_config['tracking_estimates']}")
     print(f"Draw publisher bound to {zmq_config['stimulus_draw']}")
@@ -192,6 +197,10 @@ def main(experiment_name: str, session_timestamp: str):
         traceback.print_exc()
         sys.exit(1)
 
+    # --- NEW: Variable to prevent spamming the same status message ---
+    last_status_print_time = 0
+    status_print_interval = 1.0  # Print status at most once per second
+
     try:
         while running:
             msg_bytes = estimate_sub.recv()
@@ -207,9 +216,9 @@ def main(experiment_name: str, session_timestamp: str):
                 print("Experiment duration complete. Publishing shutdown signal.")
                 # Send a simple message. The content doesn't matter, just its presence.
                 shutdown_pub.send_string("SHUTDOWN")
-                time.sleep(1) # Give other processes a moment to receive it
-                running = False # Break our own loop
-                continue # Skip the rest of the loop
+                time.sleep(1)  # Give other processes a moment to receive it
+                running = False  # Break our own loop
+                continue  # Skip the rest of the loop
 
             if "stimulus_draw" in outputs and outputs["stimulus_draw"]:
                 send_start = time.time()
@@ -222,6 +231,14 @@ def main(experiment_name: str, session_timestamp: str):
                 log_pub.send(pack_msg(outputs["log_data"]))
                 send_time_ms = (time.time() - send_start) * 1000
                 perf_monitor.record_log_send(send_time_ms)
+
+            current_time = time.time()
+            if "status_message" in outputs and (
+                current_time - last_status_print_time > status_print_interval
+            ):
+                # Use a carriage return to keep the status on a single updating line
+                print(f"\r{outputs['status_message']}", end="", flush=True)
+                last_status_print_time = current_time
 
             # Print stats every 5 seconds
             if time.time() - stats_timer > 5:

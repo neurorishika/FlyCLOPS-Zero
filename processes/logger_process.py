@@ -198,18 +198,33 @@ def main(experiment_name: str, session_timestamp: str):
     
     print("Logger process started. Subscribed to log_data stream.")
     
+    poller = zmq.Poller()
+    poller.register(log_sub, zmq.POLLIN)
+    poller.register(shutdown_sub, zmq.POLLIN)
+
     stats_timer = time.time()
     
     try:
         while running:
-            socks = dict(poller.poll(timeout=0))
+            socks = dict(poller.poll(timeout=100)) # Poll for 100ms
+            
+            # --- ALWAYS check for shutdown signal first ---
             if shutdown_sub in socks:
-                print("Shutdown signal received, stopping camera.")
+                print("Shutdown signal received, stopping logger.")
                 running = False
-                continue
-            log_bytes = log_sub.recv()
-            log_payload = unpack_msg(log_bytes)
-            hdf5_logger.log_fly_data(log_payload)
+                continue # End this loop iteration immediately
+
+            # If we have data, process it
+            if log_sub in socks:
+                # Use a loop to drain the queue in case multiple messages arrived
+                while True:
+                    try:
+                        log_bytes = log_sub.recv(flags=zmq.NOBLOCK)
+                        log_payload = unpack_msg(log_bytes)
+                        hdf5_logger.log_fly_data(log_payload)
+                    except zmq.Again:
+                        # No more messages in the queue
+                        break
             
             # Print stats every 5 seconds
             if time.time() - stats_timer > 5:

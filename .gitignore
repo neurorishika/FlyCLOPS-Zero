@@ -17,3 +17,6 @@ env/
 # HDF5 files
 *.h5
 *.hdf5
+
+# anything in data folders
+data/**

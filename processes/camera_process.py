@@ -124,8 +124,10 @@ def main(experiment_name: str, session_timestamp: str):
     shutdown_sub.setsockopt(zmq.SUBSCRIBE, b'')
 
     socket = context.socket(zmq.PUB)
+    socket.setsockopt(zmq.SNDHWM, 1) # Set High-Water Mark to 1
+    socket.setsockopt(zmq.LINGER, 0)  # Do not block on send
     socket.bind(zmq_config["camera_frames"])
-    print(f"Camera publisher bound to {zmq_config['camera_frames']}")
+    print(f"Camera publisher bound to {zmq_config['camera_frames']} (Non-blocking, HWM=1)")
 
     poller = zmq.Poller()
     poller.register(shutdown_sub, zmq.POLLIN)

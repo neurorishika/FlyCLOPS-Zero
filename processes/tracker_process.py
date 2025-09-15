@@ -176,7 +176,10 @@ def main(experiment_name: str, session_timestamp: str):
 
     # Publisher socket for tracking estimates
     estimate_pub = context.socket(zmq.PUB)
+    estimate_pub.setsockopt(zmq.SNDHWM, 1)
+    estimate_pub.setsockopt(zmq.LINGER, 0)
     estimate_pub.bind(zmq_config["tracking_estimates"])
+
 
     poller = zmq.Poller()
     poller.register(shutdown_sub, zmq.POLLIN)
@@ -185,8 +188,10 @@ def main(experiment_name: str, session_timestamp: str):
     debug_pub = None
     if tracker_config.get("debug", False):
         debug_pub = context.socket(zmq.PUB)
+        debug_pub.setsockopt(zmq.SNDHWM, 1)
+        debug_pub.setsockopt(zmq.LINGER, 0)
         debug_pub.bind(zmq_config["debug_tracker"])
-        print(f"Tracker debug publisher bound to {zmq_config['debug_tracker']}")
+        print(f"Tracker debug publisher bound to {zmq_config['debug_tracker']} (Non-blocking, HWM=1)")
 
     print(f"Tracker process subscribed to {zmq_config['camera_frames']}")
     print(f"Tracker publisher bound to {zmq_config['tracking_estimates']}")
