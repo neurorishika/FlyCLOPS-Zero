@@ -5,12 +5,14 @@ import os
 import time
 import threading
 import psutil
+import cv2
 from collections import deque
 from flyclopszero.utils.config_loader import load_config
 from flyclopszero.utils.calibration_loader import Calibration
-from flyclopszero.utils.messaging import unpack_msg
+from flyclopszero.utils.messaging import unpack_msg, pack_msg
 from flyclopszero.projection.artist import Artist
 from flyclopszero.utils.logging import setup_process_logging
+
 
 running = True
 
@@ -108,6 +110,7 @@ def main(experiment_name: str, session_timestamp: str):
 
     config = load_config(experiment_name)
     zmq_config = config["zmq_sockets"]
+    camera_config = config["camera"]
 
     # Load the rig calibration data
     # TODO: Make the calibration file path configurable
@@ -116,15 +119,20 @@ def main(experiment_name: str, session_timestamp: str):
     context = zmq.Context()
 
     shutdown_sub = context.socket(zmq.SUB)
-    shutdown_sub.connect(zmq_config['shutdown_signal'])
-    shutdown_sub.setsockopt(zmq.SUBSCRIBE, b'')
-
+    shutdown_sub.connect(zmq_config["shutdown_signal"])
+    shutdown_sub.setsockopt(zmq.SUBSCRIBE, b"")
 
     draw_sub = context.socket(zmq.SUB)
     draw_sub.connect(zmq_config["stimulus_draw"])
     draw_sub.setsockopt(zmq.SUBSCRIBE, b"")
     draw_sub.setsockopt(zmq.CONFLATE, 1)  # Always show the latest stimulus
     draw_sub.setsockopt(zmq.RCVTIMEO, 1000)  # 1 second timeout
+
+    stim_frame_pub = context.socket(zmq.PUB)
+    stim_frame_pub.setsockopt(zmq.SNDHWM, 1)
+    stim_frame_pub.setsockopt(zmq.LINGER, 0)
+    stim_frame_pub.bind(zmq_config["video_stimulus"])
+    print(f"Stimulus video publisher bound to {zmq_config['video_stimulus']}")
 
     poller = zmq.Poller()
     poller.register(shutdown_sub, zmq.POLLIN)
@@ -142,12 +150,17 @@ def main(experiment_name: str, session_timestamp: str):
 
     log_dir = os.path.join("data", session_timestamp, "logs")
     render_log_path = os.path.join(log_dir, "render_timestamps.csv")
-    render_log_file = open(render_log_path, 'w')
-    render_log_file.write("frame_number,t_render\n") # Write header
-    
+    render_log_file = open(render_log_path, "w")
+    render_log_file.write("frame_number,t_render\n")  # Write header
+
+    SAVE_RESOLUTION = (
+        camera_config["width"] // camera_config["downscale_factor"],
+        camera_config["height"] // camera_config["downscale_factor"],
+    )
+    JPEG_QUALITY = camera_config["jpeg_quality"]
+
     print("Artist process started, displaying on projector.")
     print("Performance monitoring enabled - stats will be logged every 5 seconds")
-
 
     try:
         while running:
@@ -156,16 +169,34 @@ def main(experiment_name: str, session_timestamp: str):
                 print("Shutdown signal received, stopping camera.")
                 running = False
                 continue
-            
+
             try:
                 draw_bytes = draw_sub.recv()
 
                 # Time the rendering operation
                 render_start = time.time()
                 draw_payload = unpack_msg(draw_bytes)
-                frame_number = draw_payload['frame_number']
-                draw_instructions = draw_payload['instructions']
-                artist.render(draw_instructions)
+                frame_number = draw_payload["frame_number"]
+                draw_instructions = draw_payload["instructions"]
+                camera_image_bgr = artist.render(draw_instructions)
+
+                # --- NEW: Downscale, compress, and publish the stimulus frame ---
+                if camera_image_bgr is not None:
+                    try:
+                        resized_frame = cv2.resize(
+                            camera_image_bgr,
+                            SAVE_RESOLUTION,
+                            interpolation=cv2.INTER_AREA,
+                        )
+                        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+                        _, jpeg_buffer = cv2.imencode(".jpg", resized_frame)
+
+                        stim_frame_payload = {"frame_number": frame_number}
+                        stim_frame_pub.send_multipart(
+                            [pack_msg(stim_frame_payload), jpeg_buffer.tobytes()]
+                        )
+                    except Exception as e:
+                        print(f"[ERROR] Stimulus video frame processing failed: {e}")
 
                 # --- NEW: Log the render timestamp immediately after display ---
                 t_render = time.time()
@@ -202,7 +233,7 @@ def main(experiment_name: str, session_timestamp: str):
                 f"Timeouts: {final_stats['timeouts']}, "
                 f"Uptime: {final_stats['uptime_seconds']:.1f}s"
             )
-
+        stim_frame_pub.close()
         artist.close()
         draw_sub.close()
         shutdown_sub.close()

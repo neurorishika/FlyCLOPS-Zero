@@ -8,9 +8,8 @@ import os
 
 class AsyncVideoWriter:
     """
-    An asynchronous video writer that uses FFmpeg in a separate thread.
-    Can be configured to downscale video to reduce performance load.
-    Logs FFmpeg's stderr to a dedicated file.
+    A versatile, asynchronous video writer using FFmpeg.
+    Can accept raw numpy frames or pre-compressed JPEG byte streams.
     """
 
     def __init__(
@@ -19,206 +18,154 @@ class AsyncVideoWriter:
         width: int,
         height: int,
         fps: int,
+        input_codec: str = "rawvideo",
         pix_fmt_in: str = "gray",
-        codec: str = "h264_nvenc",
-        scale_wh: tuple = None,
+        output_codec: str = "h264_nvenc",
         quality: int = 23,
     ):
         """
-        Initializes the FFmpeg video writer optimized for maximum performance.
+        Initializes the FFmpeg video writer.
 
         Args:
             output_file (str): Path to the output video file.
-            width (int): Width of the INPUT frames.
-            height (int): Height of the INPUT frames.
+            width (int): Width of the video frames.
+            height (int): Height of the video frames.
             fps (int): Frames per second for the output video.
-            pix_fmt_in (str): Pixel format of input frames (e.g., 'gray', 'bgr24').
-            codec (str): FFmpeg video codec to use (e.g., 'h264_nvenc').
-            scale_wh (tuple, optional): A (width, height) tuple to resize the video to.
-            quality (int, optional): The quality factor (CRF, etc.). Lower is higher quality.
+            input_codec (str): FFmpeg input codec. 'rawvideo' for numpy arrays,
+                               'mjpeg' for JPEG byte streams.
+            pix_fmt_in (str): Pixel format for raw video (e.g., 'gray', 'bgr24').
+            output_codec (str): FFmpeg output video codec (e.g., 'h264_nvenc', 'libx264').
+            quality (int): Quality factor (CRF/CQ). Lower is better. 23 is a good default.
         """
         self.output_file = output_file
-        # Larger queue for better buffering (30 seconds at fps)
-        self.frame_queue = queue.Queue(maxsize=fps * 30)
+        self.frame_queue = queue.Queue(maxsize=fps * 10)  # 10-second buffer
         self.stop_event = threading.Event()
         self.ffmpeg_log_file = None
-        self.bytes_buffer = b""  # Buffer for batched writes
-        self.buffer_size = 0
-        self.max_buffer_size = 1024 * 1024 * 4  # 4MB buffer
+        self.frame_count = 0  # Public counter for frames written
 
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            pix_fmt_in,
-            "-s",
-            f"{width}x{height}",
-            "-r",
-            str(fps),
-            "-i",
-            "pipe:0",
-            "-c:v",
-            codec,
-            "-preset",
-            "p1",  # Fastest preset for NVENC
-            "-rc",
-            "cbr",  # Constant bitrate for predictable performance
-            "-b:v",
-            "10M",  # 10Mbps bitrate - balance quality/speed
-            "-bufsize",
-            "20M",  # 2x bitrate buffer
-            "-maxrate",
-            "12M",  # Slightly higher max rate
-            "-cq",
-            str(quality),
-            "-loglevel",
-            "error",  # Only show errors
-        ]
+        # --- Build FFmpeg Command ---
+        cmd = ["ffmpeg", "-y"]
 
-        if scale_wh and len(scale_wh) == 2:
-            cmd.extend(["-vf", f"scale={scale_wh[0]}:{scale_wh[1]}"])
+        # Input options
+        if input_codec == "mjpeg":
+            cmd.extend(["-f", "mjpeg", "-i", "pipe:0"])
+        else:  # Default to rawvideo
+            cmd.extend(
+                [
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    pix_fmt_in,
+                    "-s",
+                    f"{width}x{height}",
+                    "-r",
+                    str(fps),
+                    "-i",
+                    "pipe:0",
+                ]
+            )
 
-        cmd.append(output_file)
+        # Output options
+        cmd.extend(
+            [
+                "-c:v",
+                output_codec,
+                "-preset",
+                "p1",
+                "-r",
+                str(fps),  # Set output framerate
+                "-cq",
+                str(quality),
+                "-loglevel",
+                "warning",
+                output_file,
+            ]
+        )
 
         try:
-            # --- CORRECTED BLOCK ---
-            # Open a dedicated log file for ffmpeg's stderr
             log_path = os.path.splitext(output_file)[0] + "_ffmpeg.log"
             self.ffmpeg_log_file = open(log_path, "w")
 
-            # Redirect stderr to the dedicated file handle, not sys.stderr
             self.process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,  # Discard stdout
+                stdout=subprocess.DEVNULL,
                 stderr=self.ffmpeg_log_file,
-                bufsize=self.max_buffer_size,  # Large buffer for pipe
             )
-            # --- END CORRECTED BLOCK ---
-
             self.writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
             self.writer_thread.start()
             print(
-                f"FFmpeg process started for {os.path.basename(output_file)}. See log at {log_path}"
+                f"FFmpeg ({input_codec}->{output_codec}) started for {os.path.basename(output_file)}. Log: {log_path}"
             )
 
-        except FileNotFoundError:
-            print(
-                "ERROR: ffmpeg command not found. Please ensure ffmpeg is in your PATH."
-            )
-            if self.ffmpeg_log_file:
-                self.ffmpeg_log_file.close()
-            sys.exit(1)
         except Exception as e:
-            print(f"Error starting ffmpeg for {os.path.basename(output_file)}: {e}")
+            print(
+                f"FATAL: Error starting ffmpeg for {os.path.basename(output_file)}: {e}"
+            )
             if self.ffmpeg_log_file:
                 self.ffmpeg_log_file.close()
             raise
 
     def _writer_loop(self):
-        """Optimized writer loop with batched writes for maximum throughput."""
-        frames_to_process = []
-
+        """Continuously pulls data from the queue and writes to FFmpeg's stdin."""
         while not self.stop_event.is_set():
             try:
-                # Try to get multiple frames at once for batch processing
-                frame = self.frame_queue.get(timeout=0.01)  # Very short timeout
-                if frame is None:
+                data = self.frame_queue.get(timeout=1)
+                if data is None:
                     break
 
-                frames_to_process.append(frame)
-
-                # Batch process frames or when we hit buffer limit
-                while len(frames_to_process) > 0 and (
-                    len(frames_to_process) >= 10  # Process 10 frames at once
-                    or self.frame_queue.empty()  # Or if queue is empty
-                    or self.buffer_size >= self.max_buffer_size  # Or buffer is full
-                ):
-                    try:
-                        # Process a batch of frames
-                        batch_data = b""
-                        batch_size = min(10, len(frames_to_process))
-
-                        for _ in range(batch_size):
-                            if frames_to_process:
-                                frame_data = frames_to_process.pop(0)
-                                batch_data += frame_data.tobytes()
-
-                        # Write batch to FFmpeg
-                        if batch_data:
-                            self.process.stdin.write(batch_data)
-                            self.process.stdin.flush()  # Ensure data is sent
-
-                    except BrokenPipeError:
-                        print(
-                            f"ERROR: Broken pipe for {os.path.basename(self.output_file)}. FFmpeg may have crashed."
-                        )
-                        break
-
+                self.process.stdin.write(data)
+                self.frame_count += 1
             except queue.Empty:
-                # If queue is empty but we have frames to process, process them
-                if frames_to_process:
-                    continue
-                else:
-                    continue
-
-        # Process any remaining frames
-        if frames_to_process:
-            try:
-                batch_data = b"".join(frame.tobytes() for frame in frames_to_process)
-                if batch_data:
-                    self.process.stdin.write(batch_data)
-                    self.process.stdin.flush()
+                continue
             except BrokenPipeError:
-                pass
+                print(
+                    f"ERROR: Broken pipe for {os.path.basename(self.output_file)}. FFmpeg crashed."
+                )
+                break
 
         if self.process.stdin:
             self.process.stdin.close()
 
-    def write_frame(self, frame: np.ndarray) -> bool:  # <-- ADD RETURN TYPE HINT
-        """Add a frame to the writing queue. Non-blocking."""
-        try:
-            # Ensure frame is contiguous for fastest memory access
-            if not frame.flags["C_CONTIGUOUS"]:
-                frame = np.ascontiguousarray(frame)
+    def write_frame(self, frame: np.ndarray) -> bool:
+        """Add a numpy frame to the writing queue."""
+        if not frame.flags["C_CONTIGUOUS"]:
+            frame = np.ascontiguousarray(frame)
+        return self._queue_data(frame.tobytes())
 
-            self.frame_queue.put_nowait(frame)
-            return True  # --- ADDED ---
+    def write_frame_bytes(self, frame_bytes: bytes) -> bool:
+        """Add raw frame bytes (e.g., a JPEG) to the writing queue."""
+        return self._queue_data(frame_bytes)
+
+    def _queue_data(self, data: bytes) -> bool:
+        """Internal method to add data to the queue."""
+        try:
+            self.frame_queue.put_nowait(data)
+            return True
         except queue.Full:
-            print(
-                f"[WARNING] Video writer queue for {os.path.basename(self.output_file)} is full. Dropping frame."
-            )
-            return False  # --- ADDED ---
+            # This warning is now managed by the performance monitor
+            return False
 
     def close(self):
         """Signals the writer to finish and waits for FFmpeg to exit."""
         print(f"Closing video writer for {os.path.basename(self.output_file)}...")
-
         if self.writer_thread.is_alive():
-            # Signal completion and wait for thread to finish
             self.frame_queue.put(None)
             self.stop_event.set()
-            self.writer_thread.join(timeout=15)  # Longer timeout for large queues
-
-            if self.writer_thread.is_alive():
-                print(
-                    f"[WARNING] Writer thread for {os.path.basename(self.output_file)} did not finish cleanly"
-                )
+            self.writer_thread.join(timeout=10)
 
         if self.process and self.process.poll() is None:
             try:
-                # Give FFmpeg more time to finish encoding
-                self.process.wait(timeout=20)
+                self.process.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 print(
                     f"FFmpeg for {os.path.basename(self.output_file)} did not exit gracefully. Killing."
                 )
                 self.process.kill()
-                self.process.wait()  # Wait for kill to complete
+                self.process.wait()
 
         if self.ffmpeg_log_file:
             self.ffmpeg_log_file.close()
-
-        print(f"Video {os.path.basename(self.output_file)} writer closed.")
+        print(
+            f"Video {os.path.basename(self.output_file)} writer closed. Total frames: {self.frame_count}"
+        )

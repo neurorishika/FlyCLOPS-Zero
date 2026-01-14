@@ -7,6 +7,8 @@ camera:
   offset_y: 8
   gain: 0.0 
   target_fps: 100
+  downscale_factor: 4 # Factor to downscale images for processing (1 = full size, 2 = half size, etc.)
+  jpeg_quality: 75
 
 arena:
   physical_radius: 75.0  # in mm
@@ -39,6 +41,8 @@ zmq_sockets:
   log_data: "ipc:///tmp/log_data.sock"
   debug_tracker: "ipc:///tmp/debug_tracker.sock"
   shutdown_signal: "ipc:///tmp/shutdown_signal.sock"
+  video_camera: "ipc:///tmp/video_camera.sock"
+  video_stimulus: "ipc:///tmp/video_stimulus.sock"
 
 tracker:
   n_targets: 4
@@ -58,8 +62,7 @@ tracker:
   debug: true # Set to true to see OpenCV windows from the tracker process
   debug_frame_skip: 50 # Send every Nth frame to debug viewer (reduces load)
   debug_jpeg_quality: 75 # JPEG compression quality (0-100, lower = smaller files)
-  debug_resize_width: 512 # Resize debug images to this width for performance
-  debug_resize_height: 512 # Resize debug images to this height for performance
+  debug_downscale_factor: 1 # Downscale factor for debug images (cumulates with camera downscale)
 
 experiment:
   exposure_time: 9000  # in microseconds (overrides FPS if more than 10e6/FPS)

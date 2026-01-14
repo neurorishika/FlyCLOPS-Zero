@@ -163,8 +163,8 @@ def main(experiment_name: str, session_timestamp: str):
     context = zmq.Context()
 
     shutdown_sub = context.socket(zmq.SUB)
-    shutdown_sub.connect(zmq_config['shutdown_signal'])
-    shutdown_sub.setsockopt(zmq.SUBSCRIBE, b'')
+    shutdown_sub.connect(zmq_config["shutdown_signal"])
+    shutdown_sub.setsockopt(zmq.SUBSCRIBE, b"")
 
     # Subscriber socket for camera frames
     frame_sub = context.socket(zmq.SUB)
@@ -180,9 +180,22 @@ def main(experiment_name: str, session_timestamp: str):
     estimate_pub.setsockopt(zmq.LINGER, 0)
     estimate_pub.bind(zmq_config["tracking_estimates"])
 
+    # --- NEW: Publisher for downscaled camera video frames ---
+    video_frame_pub = context.socket(zmq.PUB)
+    video_frame_pub.setsockopt(zmq.SNDHWM, 1)
+    video_frame_pub.setsockopt(zmq.LINGER, 0)
+    video_frame_pub.bind(zmq_config["video_camera"])
+    print(f"Camera video publisher bound to {zmq_config['video_camera']}")
 
     poller = zmq.Poller()
     poller.register(shutdown_sub, zmq.POLLIN)
+
+    # --- NEW: Video frame generation parameters ---
+    SAVE_RESOLUTION = (
+        camera_config["width"] // camera_config["downscale_factor"],
+        camera_config["height"] // camera_config["downscale_factor"],
+    )
+    JPEG_QUALITY = camera_config["jpeg_quality"]
 
     # --- New: Publisher for debug images ---
     debug_pub = None
@@ -191,7 +204,9 @@ def main(experiment_name: str, session_timestamp: str):
         debug_pub.setsockopt(zmq.SNDHWM, 1)
         debug_pub.setsockopt(zmq.LINGER, 0)
         debug_pub.bind(zmq_config["debug_tracker"])
-        print(f"Tracker debug publisher bound to {zmq_config['debug_tracker']} (Non-blocking, HWM=1)")
+        print(
+            f"Tracker debug publisher bound to {zmq_config['debug_tracker']} (Non-blocking, HWM=1)"
+        )
 
     print(f"Tracker process subscribed to {zmq_config['camera_frames']}")
     print(f"Tracker publisher bound to {zmq_config['tracking_estimates']}")
@@ -206,8 +221,7 @@ def main(experiment_name: str, session_timestamp: str):
             "debug",
             "debug_frame_skip",
             "debug_jpeg_quality",
-            "debug_resize_width",
-            "debug_resize_height",
+            "debug_downscale_factor",
         ]
     }
 
@@ -223,10 +237,11 @@ def main(experiment_name: str, session_timestamp: str):
     jpeg_quality = tracker_config.get(
         "debug_jpeg_quality", 60
     )  # JPEG compression quality
-    debug_resize_width = tracker_config.get("debug_resize_width", 512)  # Resize width
-    debug_resize_height = tracker_config.get(
-        "debug_resize_height", 512
-    )  # Resize height
+    debug_downscale_factor = tracker_config.get(
+        "debug_downscale_factor", 1
+    )  # Downscale factor
+    debug_resize_width = camera_config["width"] // debug_downscale_factor
+    debug_resize_height = camera_config["height"] // debug_downscale_factor
 
     print(
         f"Debug config: Skip every {debug_frame_skip} frames, "
@@ -270,10 +285,28 @@ def main(experiment_name: str, session_timestamp: str):
                         "timestamp": time.time(),
                         "estimates": estimates,
                         "frame_number": frame_meta["frame_number"],
-                        "t_capture": frame_meta["timestamp"], # Forward the original
-                        "t_tracking_done": time.time(),     # Add our own
+                        "t_capture": frame_meta["timestamp"],  # Forward the original
+                        "t_tracking_done": time.time(),  # Add our own
                     }
                     estimate_pub.send(pack_msg(message_payload))
+
+                if frame is not None:
+                    try:
+                        resized_frame = cv2.resize(
+                            frame, SAVE_RESOLUTION, interpolation=cv2.INTER_AREA
+                        )
+                        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+                        _, jpeg_buffer = cv2.imencode(".jpg", resized_frame)
+
+                        # Publish as a multipart message: frame_number + jpeg bytes
+                        video_frame_payload = {
+                            "frame_number": frame_meta["frame_number"]
+                        }
+                        video_frame_pub.send_multipart(
+                            [pack_msg(video_frame_payload), jpeg_buffer.tobytes()]
+                        )
+                    except Exception as e:
+                        print(f"[ERROR] Camera video frame processing failed: {e}")
 
                 # --- Optimized debug image publishing with resizing ---
                 if debug_image is not None and debug_pub is not None:
